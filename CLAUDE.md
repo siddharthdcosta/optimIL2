@@ -25,6 +25,7 @@ The project itself is installed as an editable package (`optimil2`), so `import 
 
 - `src/optimil2/`: importable project code. Reusable logic (data processing, datasets, models) goes here.
   - `src/optimil2/data/`: code for downloading and processing data.
+    - `src/optimil2/data/raw/`: one module per source that downloads untouched files into `data/raw/<source>/`, plus shared helpers in `download.py`. Scripts in `scripts/data/` only call these.
 - `scripts/`: thin entry points that import from `optimil2` and run something.
   - `scripts/setup/`: one-time setup (cloning external repos, environment).
     - `folders.py` creates the gitignored folders (`data/`, `data/raw/`, `repos/`). Run it first on a fresh clone, and add new gitignored folders to it.
