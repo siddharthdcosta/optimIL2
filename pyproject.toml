@@ -7,10 +7,12 @@ name = "optimil2"
 version = "0.1.0"
 description = "Ionic liquid generation"
 requires-python = ">=3.12"
-dynamic = ["dependencies"]
-
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
+dependencies = [
+    "numpy>=2.5",
+    "torch>=2.15",
+    "rdkit>=2026.9",
+    "torch_geometric>=2.8",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

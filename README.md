@@ -16,5 +16,5 @@ conda activate optimIL2
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e .   # installs requirements.txt plus this package
+pip install -e .   # installs dependencies plus this package
 ```

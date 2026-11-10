@@ -14,7 +14,7 @@ conda activate optimIL2
 
 Main dependencies: numpy, PyTorch, RDKit, and PyTorch Geometric (`torch_geometric`). These are installed with pip inside the conda environment, since PyTorch no longer publishes conda packages.
 
-Dependencies are listed in `requirements.txt`, which is the single source of truth. `environment.yml` pins Python 3.12 and installs `requirements.txt` through pip. When adding a dependency, add it to `requirements.txt` only.
+Dependencies are listed in `pyproject.toml` under `dependencies`, which is the single source of truth. `environment.yml` pins Python 3.12 and installs the project with `pip install -e .`. When adding a dependency, add it to `pyproject.toml` only, then rerun `pip install -e .`.
 
 - With conda: `conda env create -f environment.yml`
 - Without conda: create a Python 3.12 venv, then `pip install -e .`
