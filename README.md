@@ -22,7 +22,7 @@ pip install -e .   # installs dependencies plus this package
 **Then, with the environment active, run from the repo root:**
 
 ```bash
-python scripts/setup/folders.py   # creates the gitignored folders (data/, data/raw/, repos/)
+python scripts/setup/folders.py   # creates the gitignored folders (data/, data/raw/, data/processed/, repos/)
 python scripts/setup/repos.py     # clones FlowMol and ILGen (code only) into repos/
 ```
 
@@ -46,5 +46,14 @@ recording the source URL and checksum of every file:
 
 Safe to re-run: files already downloaded are skipped. The ILGen repos have no
 license, so keep these files local and do not redistribute them.
+
+Then process them:
+
+```bash
+python scripts/data/filter_charge.py   # keeps +1 cations and -1 anions, about 1 minute
+```
+
+This writes `data/processed/pubchem_ions/`: 834,945 cations and 364,311 anions,
+plus a `summary.json` with how many ions were kept and dropped.
 
 See `docs/data.md` for a survey of all data sources.

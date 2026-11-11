@@ -12,5 +12,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 DATA = ROOT / "data"
 RAW_DATA = DATA / "raw"
+PROCESSED_DATA = DATA / "processed"
 REPOS = ROOT / "repos"
 DOCS = ROOT / "docs"

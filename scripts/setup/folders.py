@@ -7,11 +7,12 @@ Safe to re-run: existing folders are left untouched. When a new gitignored
 folder is needed, add its path to optimil2/paths.py and to FOLDERS below.
 """
 
-from optimil2.paths import DATA, RAW_DATA, REPOS, ROOT
+from optimil2.paths import DATA, PROCESSED_DATA, RAW_DATA, REPOS, ROOT
 
 FOLDERS = [
     DATA,
     RAW_DATA,
+    PROCESSED_DATA,
     REPOS,
 ]
 
