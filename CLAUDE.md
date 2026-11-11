@@ -35,4 +35,5 @@ The project itself is installed as an editable package (`optimil2`), so `import 
 - `repos/`: cloned external repos (e.g. FlowMol). Gitignored.
   - Clone them with `python scripts/setup/repos.py`.
   - They are for reading only. Never install them or their environments into `optimIL2`: they pin older, conflicting versions of Python, PyTorch and RDKit. To run one, use a separate conda environment.
+- `investigate/`: one-off scripts for exploring a question. Not part of the pipeline; nothing imports them. Downloads are cached in `data/investigate/`.
 - `docs/`, `research/`: notes and reference material.

@@ -46,6 +46,9 @@ ILGEN_FILES = [
     RemoteFile(ILGEN_OVERALL, ILGEN_OVERALL_COMMIT, "database/IL-cations.csv", "il_cations.csv"),
     RemoteFile(ILGEN_OVERALL, ILGEN_OVERALL_COMMIT, "database/IL-anions.csv", "il_anions.csv"),
     RemoteFile(ILGEN_OVERALL, ILGEN_OVERALL_COMMIT, "database/IL-melting-point.csv", "il_melting_points.csv"),
+    # Melting points of organic salts in general (not only ILs), compiled by the
+    # ILGen authors from the CRC Handbook, Wikidata, CAS, Bradley and the CSD.
+    RemoteFile(ILGEN_ION, ILGEN_ION_COMMIT, "database/melting_point/general_MPT.csv", "general_melting_points.csv"),
     # Virtual pairs predicted by ILGen's link-prediction model. Not real ILs.
     RemoteFile(ILGEN_OVERALL, ILGEN_OVERALL_COMMIT, "database/expanded-ILs.csv", "expanded_ils.csv"),
 ]
