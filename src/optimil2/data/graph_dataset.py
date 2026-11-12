@@ -6,7 +6,8 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
-from optimil2.data.processing.il_graphs import IL_GRAPHS_DIR, SPLITS
+from optimil2.data.processing.il_graphs import IL_GRAPHS_DIR
+from optimil2.data.processing.il_molecules import SPLITS
 from optimil2.data.processing.molgraph import Vocab
 
 
