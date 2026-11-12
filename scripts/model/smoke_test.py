@@ -17,6 +17,8 @@ import torch
 from rdkit import RDLogger
 
 from optimil2.data.graph_dataset import ILGraphs
+from optimil2.data.processing.il_graphs import IL_GRAPHS_DIR
+from optimil2.data.processing.il_molecules import split_smiles
 from optimil2.model_primitive import checks
 from optimil2.model_primitive.diffusion import build_model
 
@@ -24,6 +26,7 @@ from optimil2.model_primitive.diffusion import build_model
 def run(device: str, batch_size: int) -> None:
     torch.manual_seed(0)
     data = ILGraphs("train")
+    train_smiles = split_smiles(IL_GRAPHS_DIR, "train")
     model = build_model().to(device)
     x0 = torch.stack([data[i][0] for i in range(batch_size)]).to(device)
     e0 = torch.stack([data[i][1] for i in range(batch_size)]).to(device)
@@ -36,7 +39,7 @@ def run(device: str, batch_size: int) -> None:
         ("denoiser", lambda: checks.check_denoiser(model, x0, e0)),
         ("loss", lambda: checks.check_loss(model, x0, e0)),
         ("reverse process", lambda: checks.check_reverse_process(model, x0, e0)),
-        ("sampling", lambda: checks.check_sampling(model, data.vocab)),
+        ("sampling", lambda: checks.check_sampling(model, data.vocab, train_smiles)),
     ]
     for name, check in steps:
         start = time.perf_counter()

@@ -1,4 +1,7 @@
-"""Self-checks for the crude diffusion model, run by scripts/model/smoke_test.py.
+"""Self-checks for the crude graph diffusion model, run by scripts/model/smoke_test.py.
+
+The string model has the same checks in string_checks.py. `check_noise_math`
+and `known_x0_posterior` test the shared noise process and are used by both.
 
 Nothing here trains. Each check raises AssertionError with a message when it
 fails and otherwise returns a one-line summary. They cover what cannot be
@@ -11,7 +14,8 @@ seen by reading shapes alone:
 - the reverse process, with an "oracle" in place of the network (it always
   predicts the true clean graph): every step must then be the exact
   posterior, and sampling must end exactly on that graph
-- sampling with the real, untrained network, end to end
+- sampling with the real, untrained network, end to end, scored with the
+  metrics of optimil2.evaluation
 """
 
 import math
@@ -19,7 +23,8 @@ import math
 import torch
 from torch import nn
 
-from optimil2.data.processing.molgraph import Vocab, decode, decode_il
+from optimil2.data.processing.molgraph import Vocab, to_smiles
+from optimil2.evaluation import evaluate
 from optimil2.model_primitive.diffusion import GraphDiffusion
 from optimil2.model_primitive.noise import cosine_alpha_bar, posterior, transition
 
@@ -59,6 +64,24 @@ def check_noise_math(marginals: torch.Tensor, num_steps: int = 500) -> str:
     assert posterior_error < 1e-10, f"posterior is inconsistent with the forward process by {posterior_error}"
     assert mixture_error < 1e-10, f"posterior under an uncertain x_0 is not the weighted average, off by {mixture_error}"
     return f"transitions and posterior exact (errors {closed_form_error:.0e}, {posterior_error:.0e}, {mixture_error:.0e})"
+
+
+def known_x0_posterior(
+    noisy: torch.Tensor, clean: torch.Tensor, marginals: torch.Tensor, step: int, alpha_bar: torch.Tensor
+) -> torch.Tensor:
+    """q(x_{t-1} | x_t, x_0) at t = step for every variable, straight from Bayes' rule in float64 on the CPU.
+
+    noisy and clean are class indices of the same shape (x_t and x_0) and
+    alpha_bar is the float64 schedule. Returns that shape plus a class axis.
+    This is what a reverse step must produce when the denoiser is certain of
+    x_0. It is written entry by entry, without the functions under test.
+    """
+    noisy, clean, m = noisy.cpu(), clean.cpu(), marginals.cpu().double()
+    q_step, q_bar_prev, q_bar = (
+        transition(keep.view(1), m)[0] for keep in (alpha_bar[step] / alpha_bar[step - 1], alpha_bar[step - 1], alpha_bar[step])
+    )
+    # [..., k] = q(x_{t-1} = k | x_0) * q(x_t | x_{t-1} = k) / q(x_t | x_0)
+    return q_bar_prev[clean] * q_step.T[noisy] / q_bar[clean, noisy].unsqueeze(-1)
 
 
 def check_add_noise(model: GraphDiffusion, x0: torch.Tensor, e0: torch.Tensor, repeats: int = 16) -> str:
@@ -141,29 +164,21 @@ def check_reverse_process(model: GraphDiffusion, x0: torch.Tensor, e0: torch.Ten
     """With an oracle denoiser, each reverse step is the exact posterior and sampling ends on the clean graph.
 
     If the network knows x_0, the distribution `reverse_probs` returns for a
-    variable must be q(x_{t-1} | x_t, x_0). That is recomputed here entry by
-    entry, straight from Bayes' rule in float64, for graphs noised to step t.
-    This tests how `reverse_probs` is wired (which matrices, which step),
-    not only the posterior formula.
+    variable must be q(x_{t-1} | x_t, x_0). That is recomputed by
+    `known_x0_posterior` for graphs noised to step t. This tests how
+    `reverse_probs` is wired (which matrices, which step), not only the
+    posterior formula.
     """
     oracle = Oracle(x0, e0, model.atom_marginals.numel(), model.bond_marginals.numel())
     chain = GraphDiffusion(oracle, model.atom_marginals, model.bond_marginals, model.num_slots, num_steps).to(x0.device)
     alpha_bar = cosine_alpha_bar(num_steps)
-
-    def bayes(noisy: torch.Tensor, clean: torch.Tensor, marginals: torch.Tensor, step: int) -> torch.Tensor:
-        noisy, clean, m = noisy.cpu(), clean.cpu(), marginals.cpu().double()
-        q_step, q_bar_prev, q_bar = (
-            transition(keep.view(1), m)[0] for keep in (alpha_bar[step] / alpha_bar[step - 1], alpha_bar[step - 1], alpha_bar[step])
-        )
-        # [..., k] = q(x_{t-1} = k | x_0) * q(x_t | x_{t-1} = k) / q(x_t | x_0)
-        return q_bar_prev[clean] * q_step.T[noisy] / q_bar[clean, noisy].unsqueeze(-1)
 
     worst = 0.0
     for step in (1, 2, num_steps // 2, num_steps - 1, num_steps):
         x_t, e_t = chain.add_noise(x0, e0, torch.full((len(x0),), step, device=x0.device))
         x_probs, e_probs = chain.reverse_probs(x_t, e_t, step)
         for probs, noisy, clean, marginals in ((x_probs, x_t, x0, chain.atom_marginals), (e_probs, e_t, e0, chain.bond_marginals)):
-            error = (probs.cpu().double() - bayes(noisy, clean, marginals, step)).abs().max().item()
+            error = (probs.cpu().double() - known_x0_posterior(noisy, clean, marginals, step, alpha_bar)).abs().max().item()
             assert error < 1e-4, f"step {step}: reverse distribution differs from Bayes' rule by {error}"
             worst = max(worst, error)
 
@@ -172,11 +187,13 @@ def check_reverse_process(model: GraphDiffusion, x0: torch.Tensor, e0: torch.Ten
     return f"reverse steps match Bayes' rule (error {worst:.0e}); oracle sampling recovers all {len(x0)} graphs exactly"
 
 
-def check_sampling(model: GraphDiffusion, vocab: Vocab, num_graphs: int = 4) -> str:
+def check_sampling(model: GraphDiffusion, vocab: Vocab, train_smiles: list[str], num_graphs: int = 4) -> str:
     """Full sampling with the untrained network gives well-formed graph tensors.
 
-    Random weights should not produce valid ionic liquids; the counts in the
-    summary are a baseline for a trained model, not a pass criterion.
+    The samples are scored against train_smiles with optimil2.evaluation,
+    the same call that scores the string model. Random weights should not
+    produce valid ionic liquids; the metrics in the summary are a baseline
+    for a trained model, not a pass criterion.
     """
     x, e = model.sample(num_graphs)
     assert x.shape == (num_graphs, model.num_slots) and e.shape == (num_graphs, model.num_slots, model.num_slots)
@@ -184,10 +201,6 @@ def check_sampling(model: GraphDiffusion, vocab: Vocab, num_graphs: int = 4) -> 
     assert 0 <= x.min() and x.max() < vocab.num_atom_classes, "atom class out of range"
     assert 0 <= e.min() and e.max() < vocab.num_bond_classes, "bond class out of range"
     assert torch.equal(e, e.transpose(1, 2)) and not e.diagonal(dim1=1, dim2=2).any(), "sampled bonds must be symmetric"
-    molecules = sum(decode(x[i], e[i], vocab) is not None for i in range(num_graphs))
-    ion_pairs = sum(decode_il(x[i], e[i], vocab) is not None for i in range(num_graphs))
+    metrics = evaluate([to_smiles(x[i], e[i], vocab) for i in range(num_graphs)], train_smiles)
     atoms = (x != 0).sum(dim=1).float().mean().item()
-    return (
-        f"{num_graphs} graphs sampled in {model.num_steps} steps, {atoms:.0f} atoms on average; "
-        f"RDKit accepts {molecules}, valid ion pairs {ion_pairs} (untrained)"
-    )
+    return f"{num_graphs} graphs sampled in {model.num_steps} steps, {atoms:.0f} atoms on average; {metrics} (untrained)"
