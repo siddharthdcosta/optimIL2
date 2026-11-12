@@ -191,19 +191,32 @@ def il_from_mol(mol: Chem.Mol) -> IL:
     return IL(f"{cation_smiles}.{anion_smiles}", cation_smiles, anion_smiles, kekule)
 
 
+def read_mol(smiles: str) -> Chem.Mol | None:
+    """Parse a SMILES, dropping stereo and isotope labels. None if RDKit rejects it.
+
+    The canonical SMILES of the result decides what counts as the same
+    molecule, both when the data pipeline removes duplicates and when
+    optimil2.evaluation compares generated samples with the training set.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    for atom in mol.GetAtoms():
+        atom.SetIsotope(0)
+    mol = Chem.RemoveHs(mol)  # deuterium atoms are ordinary hydrogens now
+    Chem.RemoveStereochemistry(mol)
+    return mol
+
+
 def read_il(smiles: str) -> IL:
     """Parse a salt SMILES, dropping stereo and isotope labels.
 
     Raises Rejected with reason "unparsable", "radical" or
     "not_one_cation_one_anion".
     """
-    mol = Chem.MolFromSmiles(smiles)
+    mol = read_mol(smiles)
     if mol is None:
         raise Rejected("unparsable")
-    for atom in mol.GetAtoms():
-        atom.SetIsotope(0)
-    mol = Chem.RemoveHs(mol)  # deuterium atoms are ordinary hydrogens now
-    Chem.RemoveStereochemistry(mol)
     return il_from_mol(mol)
 
 
@@ -251,6 +264,16 @@ def decode(x, e, vocab: Vocab) -> Chem.Mol | None:
     except Chem.MolSanitizeException:
         return None
     return mol
+
+
+def to_smiles(x, e, vocab: Vocab) -> str | None:
+    """Decode (x, e) into a SMILES, or None if RDKit rejects the graph.
+
+    This is the form optimil2.evaluation scores, for any model. The result
+    can be any molecule, and is the empty string for a graph with no atoms.
+    """
+    mol = decode(x, e, vocab)
+    return None if mol is None else Chem.MolToSmiles(mol)
 
 
 def decode_il(x, e, vocab: Vocab) -> IL | None:
