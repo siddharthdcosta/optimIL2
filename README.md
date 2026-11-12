@@ -56,4 +56,24 @@ python scripts/data/filter_charge.py   # keeps +1 cations and -1 anions, about 1
 This writes `data/processed/pubchem_ions/`: 834,945 cations and 364,311 anions,
 plus a `summary.json` with how many ions were kept and dropped.
 
+```bash
+python scripts/data/build_graphs.py   # real ILs as graph tensors, about 15 seconds
+```
+
+This writes `data/processed/il_graphs/`. Each IL is one graph of heavy atoms
+with two disconnected parts (cation and anion), padded to 56 atom slots:
+
+| File | Contents |
+|---|---|
+| `train.pt`, `val.pt` | 6,107 and 744 ILs. `x` holds the atom class of each slot, `e` the bond class of each slot pair. The split holds out whole cations. |
+| `vocab.json` | The 23 atom classes (element with charge, such as `N+`; class 0 is an empty slot) and 4 bond classes (none, single, double, triple) |
+| `stats.json` | Rows kept and dropped, split sizes, class counts, and the class frequencies of the train split |
+| `molecules.csv` | SMILES of every kept IL, with its split and its row in the tensors |
+| `dropped.csv` | The 657 source rows that were dropped, each with the reason |
+
+The choices behind these numbers are explained at the top of
+`src/optimil2/data/processing/molgraph.py` (graph format) and
+`src/optimil2/data/processing/il_graphs.py` (filters and split). Load a split
+with `optimil2.data.graph_dataset.ILGraphs`.
+
 See `docs/data.md` for a survey of all data sources.

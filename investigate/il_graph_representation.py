@@ -17,8 +17,9 @@ Usage:
     python scripts/data/ilgen.py                      # once, to download
     python investigate/il_graph_representation.py
 
-The answers are summarised in the docstring of
-src/optimil2/data/processing/il_graphs.py, which is where the decisions live.
+The decisions these answers led to are recorded in the docstrings of
+src/optimil2/data/processing/molgraph.py (graph format) and il_graphs.py
+(filters and split).
 """
 
 import csv
