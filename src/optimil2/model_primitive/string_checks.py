@@ -14,12 +14,13 @@ seen by reading shapes alone:
 - the denoiser: shapes, that every position sees positions on both sides,
   that the order of the tokens matters, and that the strings of a batch do
   not affect each other
-- the loss: value at initialisation, and that every weight gets a gradient
+- the loss: value at initialisation, that every weight gets a gradient, and
+  that it is zero for a denoiser that predicts the clean string exactly
 - the reverse process, with an "oracle" in place of the network (it always
   predicts the true clean string): every step must then be the exact
-  posterior, and sampling must end exactly on that string
-- sampling with the real, untrained network, end to end, scored with the
-  metrics of optimil2.evaluation
+  posterior, and sampling must run every step and end exactly on that string
+- sampling with the real, untrained network, end to end, starting from noise
+  that follows the marginals, scored with the metrics of optimil2.evaluation
 
 Two more check the comparison with the graph model rather than the model:
 
@@ -42,7 +43,7 @@ from optimil2.data.processing.molgraph import decode_il
 from optimil2.data.processing.molstring import PAD, CharVocab, decode
 from optimil2.data.string_dataset import ILStrings
 from optimil2.evaluation import evaluate
-from optimil2.model_primitive.checks import known_x0_posterior
+from optimil2.model_primitive.checks import assert_noise_levels, frequency_deviation, known_x0_posterior
 from optimil2.model_primitive.noise import cosine_alpha_bar
 from optimil2.model_primitive.string_diffusion import StringDiffusion
 
@@ -106,8 +107,30 @@ def check_denoiser(model: StringDiffusion, x: torch.Tensor) -> str:
     )
 
 
+class Oracle(nn.Module):
+    """Stands in for the denoiser and always predicts a known clean string with certainty.
+
+    It records the noise level t of every call, to check what the wrapper
+    hands the denoiser.
+    """
+
+    def __init__(self, x0: torch.Tensor, num_classes: int):
+        super().__init__()
+        self.logits = 50.0 * nn.functional.one_hot(x0, num_classes).float()
+        self.noise_levels: list[torch.Tensor] = []
+
+    def forward(self, tokens: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        self.noise_levels.append(t.detach().cpu())
+        return self.logits
+
+
 def check_loss(model: StringDiffusion, x0: torch.Tensor) -> str:
-    """The loss starts near log(number of classes), and every weight receives a gradient."""
+    """The loss starts near log(number of classes), is 0 for a perfect denoiser, and every weight receives a gradient.
+
+    The loss of the oracle tests the targets: it is 0 only if the prediction
+    for each position is scored against the clean class of that same
+    position.
+    """
     model.zero_grad()
     loss = model.loss(x0)["loss"]
     loss.backward()
@@ -117,18 +140,11 @@ def check_loss(model: StringDiffusion, x0: torch.Tensor) -> str:
     dead = [name for name, p in model.named_parameters() if p.grad is None or not p.grad.isfinite().all() or not p.grad.any()]
     assert not dead, f"parameters with no (or non-finite) gradient: {dead}"
     model.zero_grad()
-    return f"loss {value:.3f} (log {num_classes} = {uniform:.3f}); all weights get gradients"
 
-
-class Oracle(nn.Module):
-    """Stands in for the denoiser and always predicts a known clean string with certainty."""
-
-    def __init__(self, x0: torch.Tensor, num_classes: int):
-        super().__init__()
-        self.logits = 50.0 * nn.functional.one_hot(x0, num_classes).float()
-
-    def forward(self, tokens: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        return self.logits
+    oracle = Oracle(x0, num_classes)
+    perfect = StringDiffusion(oracle, model.marginals, model.length, model.num_steps).to(x0.device).loss(x0)["loss"].item()
+    assert perfect < 1e-6, f"a denoiser that predicts the clean string exactly has loss {perfect}"
+    return f"loss {value:.3f} (log {num_classes} = {uniform:.3f}), 0 for a perfect denoiser; all weights get gradients"
 
 
 def check_reverse_process(model: StringDiffusion, x0: torch.Tensor, num_steps: int = 50) -> str:
@@ -139,8 +155,13 @@ def check_reverse_process(model: StringDiffusion, x0: torch.Tensor, num_steps: i
     checks.known_x0_posterior for strings noised to step t. This tests how
     `reverse_probs` is wired (which matrices, which step), not only the
     posterior formula.
+
+    The oracle makes every chain end on the clean string, so that alone does
+    not show the chain ran all its steps. The noise levels the oracle was
+    given during sampling show that.
     """
-    chain = StringDiffusion(Oracle(x0, model.marginals.numel()), model.marginals, model.length, num_steps).to(x0.device)
+    oracle = Oracle(x0, model.marginals.numel())
+    chain = StringDiffusion(oracle, model.marginals, model.length, num_steps).to(x0.device)
     alpha_bar = cosine_alpha_bar(num_steps)
 
     worst = 0.0
@@ -151,18 +172,22 @@ def check_reverse_process(model: StringDiffusion, x0: torch.Tensor, num_steps: i
         assert error < 1e-4, f"step {step}: reverse distribution differs from Bayes' rule by {error}"
         worst = max(worst, error)
 
+    oracle.noise_levels.clear()
     assert torch.equal(chain.sample(len(x0)), x0), "with an oracle denoiser the sample must equal the clean string"
+    assert_noise_levels(oracle.noise_levels, num_steps)
     return f"reverse steps match Bayes' rule (error {worst:.0e}); oracle sampling recovers all {len(x0)} strings exactly"
 
 
 def check_sampling(model: StringDiffusion, vocab: CharVocab, train_smiles: list[str], num_strings: int = 4) -> str:
-    """Full sampling with the untrained network gives well-formed token rows.
+    """The starting noise follows the marginals, and full sampling with the untrained network gives well-formed token rows.
 
     The samples are scored against train_smiles with optimil2.evaluation,
     the same call that scores the graph model. Random weights should not
     produce valid ionic liquids; the metrics in the summary are a baseline
     for a trained model, not a pass criterion.
     """
+    frequency_deviation(model.sample_noise(64), model.marginals, "noise character")
+
     tokens = model.sample(num_strings)
     assert tokens.shape == (num_strings, model.length) and tokens.dtype == torch.long
     assert 0 <= tokens.min() and tokens.max() < vocab.num_classes, "character class out of range"

@@ -10,12 +10,17 @@ seen by reading shapes alone:
 - the transition matrices and the posterior, against brute-force arithmetic
 - the forward process, against the distribution it should produce
 - the denoiser: shapes, symmetry, and independence of slot order
-- the loss: value at initialisation, and that every weight gets a gradient
+- the loss: value at initialisation, that every weight gets a gradient, and
+  that it is zero for a denoiser that predicts the clean graph exactly
 - the reverse process, with an "oracle" in place of the network (it always
   predicts the true clean graph): every step must then be the exact
-  posterior, and sampling must end exactly on that graph
-- sampling with the real, untrained network, end to end, scored with the
-  metrics of optimil2.evaluation
+  posterior, and sampling must run every step and end exactly on that graph
+- sampling with the real, untrained network, end to end, starting from noise
+  that follows the marginals, scored with the metrics of optimil2.evaluation
+
+An untrained network cannot show whether the loss has the right targets or
+the denoiser is given the right noise level: any wiring gives a loss near
+log(classes). The oracle can, which is why it appears in three checks.
 """
 
 import math
@@ -84,6 +89,29 @@ def known_x0_posterior(
     return q_bar_prev[clean] * q_step.T[noisy] / q_bar[clean, noisy].unsqueeze(-1)
 
 
+def frequency_deviation(values: torch.Tensor, marginals: torch.Tensor, name: str) -> float:
+    """Assert that class indices were drawn from marginals; return the largest deviation of a class frequency.
+
+    The tolerance is 5 standard errors, so correctly drawn values never fail.
+    """
+    counts = torch.bincount(values.flatten().cpu(), minlength=marginals.numel())
+    deviation = (counts / counts.sum() - marginals.cpu()).abs().max().item()
+    tolerance = 5 * math.sqrt(0.25 / values.numel()) + 1e-4
+    assert deviation < tolerance, f"{name} class frequencies are off the marginals by {deviation:.4f}"
+    return deviation
+
+
+def assert_noise_levels(recorded: list[torch.Tensor], num_steps: int) -> None:
+    """Assert that sampling called the denoiser once per step, with noise levels T/T, (T-1)/T, ..., 1/T.
+
+    recorded holds the t argument of every call, each (B,), in call order.
+    """
+    assert len(recorded) == num_steps, f"sampling ran the denoiser {len(recorded)} times, expected {num_steps}"
+    levels = torch.stack(recorded).float()
+    expected = (torch.arange(num_steps, 0, -1) / num_steps).unsqueeze(1).expand_as(levels)
+    assert torch.allclose(levels, expected), "sampling must give the denoiser the noise levels 1, (T-1)/T, ..., 1/T in that order"
+
+
 def check_add_noise(model: GraphDiffusion, x0: torch.Tensor, e0: torch.Tensor, repeats: int = 16) -> str:
     """Noised graphs are valid graphs, and agree with x_0 as often as the schedule says.
 
@@ -134,8 +162,31 @@ def check_denoiser(model: GraphDiffusion, x: torch.Tensor, e: torch.Tensor) -> s
     return f"logits {tuple(x_logits.shape)} and {tuple(e_logits.shape)}, slot-order error {error:.0e}"
 
 
+class Oracle(nn.Module):
+    """Stands in for the denoiser and always predicts a known clean graph with certainty.
+
+    It records the noise level t of every call, to check what the wrapper
+    hands the denoiser.
+    """
+
+    def __init__(self, x0: torch.Tensor, e0: torch.Tensor, num_atom_classes: int, num_bond_classes: int):
+        super().__init__()
+        self.x_logits = 50.0 * nn.functional.one_hot(x0, num_atom_classes).float()
+        self.e_logits = 50.0 * nn.functional.one_hot(e0, num_bond_classes).float()
+        self.noise_levels: list[torch.Tensor] = []
+
+    def forward(self, x: torch.Tensor, e: torch.Tensor, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        self.noise_levels.append(t.detach().cpu())
+        return self.x_logits, self.e_logits
+
+
 def check_loss(model: GraphDiffusion, x0: torch.Tensor, e0: torch.Tensor) -> str:
-    """The loss starts near log(number of classes), and every weight receives a gradient."""
+    """The loss starts near log(number of classes), is 0 for a perfect denoiser, and every weight receives a gradient.
+
+    The loss of the oracle tests the targets: it is 0 only if the prediction
+    for each slot and pair is scored against the clean class of that same
+    slot or pair.
+    """
     model.zero_grad()
     parts = model.loss(x0, e0)
     parts["loss"].backward()
@@ -145,19 +196,17 @@ def check_loss(model: GraphDiffusion, x0: torch.Tensor, e0: torch.Tensor) -> str
     dead = [name for name, p in model.named_parameters() if p.grad is None or not p.grad.isfinite().all() or not p.grad.any()]
     assert not dead, f"parameters with no (or non-finite) gradient: {dead}"
     model.zero_grad()
-    return f"loss {parts['loss'].item():.3f} (node {parts['node'].item():.3f}, edge {parts['edge'].item():.3f}); all weights get gradients"
 
-
-class Oracle(nn.Module):
-    """Stands in for the denoiser and always predicts a known clean graph with certainty."""
-
-    def __init__(self, x0: torch.Tensor, e0: torch.Tensor, num_atom_classes: int, num_bond_classes: int):
-        super().__init__()
-        self.x_logits = 50.0 * nn.functional.one_hot(x0, num_atom_classes).float()
-        self.e_logits = 50.0 * nn.functional.one_hot(e0, num_bond_classes).float()
-
-    def forward(self, x: torch.Tensor, e: torch.Tensor, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.x_logits, self.e_logits
+    oracle = Oracle(x0, e0, model.atom_marginals.numel(), model.bond_marginals.numel())
+    perfect = GraphDiffusion(
+        oracle, model.atom_marginals, model.bond_marginals, model.num_slots, model.num_steps, model.edge_loss_weight
+    ).to(x0.device).loss(x0, e0)
+    for name in ("node", "edge"):
+        assert perfect[name].item() < 1e-6, f"a denoiser that predicts the clean graph exactly has {name} loss {perfect[name].item()}"
+    return (
+        f"loss {parts['loss'].item():.3f} (node {parts['node'].item():.3f}, edge {parts['edge'].item():.3f}), "
+        "0 for a perfect denoiser; all weights get gradients"
+    )
 
 
 def check_reverse_process(model: GraphDiffusion, x0: torch.Tensor, e0: torch.Tensor, num_steps: int = 50) -> str:
@@ -168,6 +217,10 @@ def check_reverse_process(model: GraphDiffusion, x0: torch.Tensor, e0: torch.Ten
     `known_x0_posterior` for graphs noised to step t. This tests how
     `reverse_probs` is wired (which matrices, which step), not only the
     posterior formula.
+
+    The oracle makes every chain end on the clean graph, so that alone does
+    not show the chain ran all its steps. The noise levels the oracle was
+    given during sampling show that.
     """
     oracle = Oracle(x0, e0, model.atom_marginals.numel(), model.bond_marginals.numel())
     chain = GraphDiffusion(oracle, model.atom_marginals, model.bond_marginals, model.num_slots, num_steps).to(x0.device)
@@ -182,19 +235,27 @@ def check_reverse_process(model: GraphDiffusion, x0: torch.Tensor, e0: torch.Ten
             assert error < 1e-4, f"step {step}: reverse distribution differs from Bayes' rule by {error}"
             worst = max(worst, error)
 
+    oracle.noise_levels.clear()
     x, e = chain.sample(len(x0))
     assert torch.equal(x, x0) and torch.equal(e, e0), "with an oracle denoiser the sample must equal the clean graph"
+    assert_noise_levels(oracle.noise_levels, num_steps)
     return f"reverse steps match Bayes' rule (error {worst:.0e}); oracle sampling recovers all {len(x0)} graphs exactly"
 
 
 def check_sampling(model: GraphDiffusion, vocab: Vocab, train_smiles: list[str], num_graphs: int = 4) -> str:
-    """Full sampling with the untrained network gives well-formed graph tensors.
+    """The starting noise follows the marginals, and full sampling with the untrained network gives well-formed graph tensors.
 
     The samples are scored against train_smiles with optimil2.evaluation,
     the same call that scores the string model. Random weights should not
     produce valid ionic liquids; the metrics in the summary are a baseline
     for a trained model, not a pass criterion.
     """
+    x, e = model.sample_noise(64)
+    rows, cols = torch.triu_indices(model.num_slots, model.num_slots, offset=1, device=e.device)
+    assert torch.equal(e, e.transpose(1, 2)) and not e.diagonal(dim1=1, dim2=2).any(), "noise bonds must be symmetric"
+    frequency_deviation(x, model.atom_marginals, "noise atom")
+    frequency_deviation(e[:, rows, cols], model.bond_marginals, "noise bond")
+
     x, e = model.sample(num_graphs)
     assert x.shape == (num_graphs, model.num_slots) and e.shape == (num_graphs, model.num_slots, model.num_slots)
     assert x.dtype == torch.long and e.dtype == torch.long
