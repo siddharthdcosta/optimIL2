@@ -18,8 +18,11 @@ There is no training loop.
 Every method that draws random numbers takes an optional torch.Generator for
 reproducibility; it must live on the same device as the model.
 
+The noise process itself (schedule, transitions, posterior, T) is in noise.py
+and is shared with the string model in string_diffusion.py. What is specific
+to graphs is here.
+
 Decisions:
-- T = 500 steps, the DiGress setting for molecules.
 - Bonds are noised and sampled on the upper triangle and mirrored, so every
   noisy graph is a valid undirected graph. The diagonal is always NO_BOND.
 - EMPTY and NO_BOND are diffused like any other class, over all N slots and
@@ -43,12 +46,20 @@ from optimil2.data.graph_dataset import train_marginals
 from optimil2.data.processing.il_graphs import IL_GRAPHS_DIR
 from optimil2.data.processing.molgraph import Vocab
 from optimil2.model_primitive.denoiser import GraphTransformer
-from optimil2.model_primitive.noise import cosine_alpha_bar, posterior, sample_categorical, symmetrize, transition
+from optimil2.model_primitive.noise import (
+    NUM_STEPS,
+    cosine_alpha_bar,
+    noise_distribution,
+    noisy_probs,
+    previous_probs,
+    sample_categorical,
+    symmetrize,
+)
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    num_steps: int = 500  # diffusion steps T
+    num_steps: int = NUM_STEPS  # diffusion steps T
     edge_loss_weight: float = 5.0  # weight of the bond term in the loss
     hidden_x: int = 128  # width of the per-slot vectors
     hidden_e: int = 32  # width of the per-pair vectors
@@ -65,7 +76,7 @@ class GraphDiffusion(nn.Module):
         atom_marginals: torch.Tensor,
         bond_marginals: torch.Tensor,
         num_slots: int,
-        num_steps: int = 500,
+        num_steps: int = NUM_STEPS,
         edge_loss_weight: float = 5.0,
     ):
         """denoiser maps (x, e, t in [0, 1]) to logits; the marginals are the noise distributions.
@@ -75,15 +86,12 @@ class GraphDiffusion(nn.Module):
         atom marginals only means the right number of atoms for this N.
         """
         super().__init__()
-        for name, marginals in (("atom", atom_marginals), ("bond", bond_marginals)):
-            if marginals.min() <= 0:
-                raise ValueError(f"every {name} class needs a positive marginal, got {marginals.tolist()}")
         self.denoiser = denoiser
         self.num_slots = num_slots
         self.num_steps = num_steps
         self.edge_loss_weight = edge_loss_weight
-        self.register_buffer("atom_marginals", (atom_marginals / atom_marginals.sum()).float())
-        self.register_buffer("bond_marginals", (bond_marginals / bond_marginals.sum()).float())
+        self.register_buffer("atom_marginals", noise_distribution(atom_marginals, "atom"))
+        self.register_buffer("bond_marginals", noise_distribution(bond_marginals, "bond"))
         self.register_buffer("alpha_bar", cosine_alpha_bar(num_steps).float())
 
     def add_noise(
@@ -91,8 +99,8 @@ class GraphDiffusion(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Draw (x_t, e_t) from q(. | x0, e0). t is (B,) integer steps in 0..T; step 0 returns the input."""
         keep = self.alpha_bar[t]
-        x_probs = transition(keep, self.atom_marginals)[torch.arange(len(t), device=t.device).view(-1, 1), x0]
-        e_probs = transition(keep, self.bond_marginals)[torch.arange(len(t), device=t.device).view(-1, 1, 1), e0]
+        x_probs = noisy_probs(x0, keep, self.atom_marginals)
+        e_probs = noisy_probs(e0, keep, self.bond_marginals)
         return sample_categorical(x_probs, generator), symmetrize(sample_categorical(e_probs, generator))
 
     def forward(self, x_t: torch.Tensor, e_t: torch.Tensor, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -130,22 +138,11 @@ class GraphDiffusion(nn.Module):
         posterior of noise.py averaged over the denoiser's prediction of the
         clean graph. At step 1 it is that prediction itself.
         """
-        t = torch.full((len(x_t),), step, device=x_t.device)
-        x_logits, e_logits = self(x_t, e_t, t)
-        keep_bar, keep_bar_prev = self.alpha_bar[t], self.alpha_bar[t - 1]
-        keep = keep_bar / keep_bar_prev  # alpha_t of this single step
-
-        def previous(values: torch.Tensor, logits: torch.Tensor, marginals: torch.Tensor) -> torch.Tensor:
-            probs = posterior(
-                values.flatten(1),
-                logits.softmax(dim=-1).flatten(1, -2),
-                transition(keep, marginals),
-                transition(keep_bar_prev, marginals),
-                transition(keep_bar, marginals),
-            )
-            return probs.view(*values.shape, -1)
-
-        return previous(x_t, x_logits, self.atom_marginals), previous(e_t, e_logits, self.bond_marginals)
+        x_logits, e_logits = self(x_t, e_t, torch.full((len(x_t),), step, device=x_t.device))
+        return (
+            previous_probs(x_t, x_logits.softmax(dim=-1), step, self.alpha_bar, self.atom_marginals),
+            previous_probs(e_t, e_logits.softmax(dim=-1), step, self.alpha_bar, self.bond_marginals),
+        )
 
     @torch.no_grad()
     def denoise_step(
