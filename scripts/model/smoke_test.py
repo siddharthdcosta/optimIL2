@@ -14,7 +14,6 @@ import argparse
 import time
 
 import torch
-from rdkit import RDLogger
 
 from optimil2.data.graph_dataset import ILGraphs
 from optimil2.data.processing.il_graphs import IL_GRAPHS_DIR
@@ -53,7 +52,6 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     args = parser.parse_args()
 
-    RDLogger.DisableLog("rdApp.*")  # untrained samples are invalid molecules; RDKit would warn about each
     devices = [args.device] if args.device else ["cpu"] + (["mps"] if torch.backends.mps.is_available() else [])
     for device in devices:
         run(device, args.batch_size)

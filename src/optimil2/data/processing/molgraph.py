@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from rdkit import Chem
+from rdkit import Chem, rdBase
 
 EMPTY = 0  # atom class of an unused slot
 NO_BOND = 0  # bond class of an unbonded pair
@@ -259,10 +259,11 @@ def decode(x, e, vocab: Vocab) -> Chem.Mol | None:
             if bond != NO_BOND:
                 mol.AddBond(a, b, BOND_TYPES[vocab.bonds[bond]])
     mol = mol.GetMol()
-    try:
-        Chem.SanitizeMol(mol)
-    except Chem.MolSanitizeException:
-        return None
+    with rdBase.BlockLogs():  # RDKit prints a warning for every graph it rejects, which is an expected outcome here
+        try:
+            Chem.SanitizeMol(mol)
+        except Chem.MolSanitizeException:
+            return None
     return mol
 
 

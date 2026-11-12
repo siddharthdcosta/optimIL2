@@ -9,7 +9,7 @@ data/processed/il_strings/ and data/processed/il_graphs/ (run
 scripts/data/build_strings.py and scripts/data/build_graphs.py first): it
 also checks that the two hold the same ILs. Nothing is trained or saved.
 Runs forward passes on real ILs, one backward pass, and full sampling; takes
-about a minute. What each check means is explained in
+about half a minute. What each check means is explained in
 src/optimil2/model_primitive/string_checks.py.
 """
 
@@ -17,7 +17,6 @@ import argparse
 import time
 
 import torch
-from rdkit import RDLogger
 
 from optimil2.data.processing.il_molecules import split_smiles
 from optimil2.data.processing.il_strings import IL_STRINGS_DIR
@@ -57,7 +56,6 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     args = parser.parse_args()
 
-    RDLogger.DisableLog("rdApp.*")  # untrained samples are invalid molecules; RDKit would warn about each
     train_smiles, val_smiles = split_smiles(IL_STRINGS_DIR, "train"), split_smiles(IL_STRINGS_DIR, "val")
     print("\n[comparison with the graph model]")
     report([
