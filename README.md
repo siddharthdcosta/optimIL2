@@ -76,4 +76,28 @@ The choices behind these numbers are explained at the top of
 `src/optimil2/data/processing/il_graphs.py` (filters and split). Load a split
 with `optimil2.data.graph_dataset.ILGraphs`.
 
+## Model
+
+`src/optimil2/model_primitive/` holds a first, crude generative model: discrete
+diffusion on the IL graphs, in the style of DiGress. Noise replaces atom and
+bond classes at random, a small graph transformer (about 1.3M parameters)
+predicts the clean classes, and sampling walks back from pure noise. It is
+not trained yet and there is no training loop.
+
+```bash
+python scripts/model/smoke_test.py   # builds it with random weights and checks it, about 40 seconds
+```
+
+This runs forward passes on real ILs, one backward pass and full sampling, on
+CPU and on MPS if available. It needs `data/processed/il_graphs/`. Samples
+from the untrained model are not valid molecules; that is expected.
+
+```python
+from optimil2.model_primitive.diffusion import build_model
+
+model = build_model()            # random weights, sized from vocab.json and stats.json
+parts = model.loss(x0, e0)       # x0: (B, 56) atom classes, e0: (B, 56, 56) bond classes
+x, e = model.sample(8)           # 8 generated graphs; decode with molgraph.decode_il
+```
+
 See `docs/data.md` for a survey of all data sources.

@@ -27,10 +27,12 @@ The project itself is installed as an editable package (`optimil2`), so `import 
   - `src/optimil2/data/`: code for downloading and processing data.
     - `src/optimil2/data/raw/`: one module per source that downloads untouched files into `data/raw/<source>/`, plus shared helpers in `download.py`. Scripts in `scripts/data/` only call these.
     - `src/optimil2/data/processing/`: code that reads `data/raw/` and writes cleaned files to `data/processed/`. Never modifies `data/raw/`.
+  - `src/optimil2/model_primitive/`: a first, crude generative model (discrete graph diffusion on the IL graphs). Untrained; its design choices are recorded in the module docstrings.
 - `scripts/`: thin entry points that import from `optimil2` and run something.
   - `scripts/setup/`: one-time setup (cloning external repos, environment).
     - `folders.py` creates the gitignored folders (`data/`, `data/raw/`, `data/processed/`, `repos/`). Run it first on a fresh clone, and add new gitignored folders to it.
   - `scripts/data/`: download and process datasets.
+  - `scripts/model/`: build and check models.
 - `data/`: data files only, never code. Gitignored; recreate it by running `scripts/data/`.
 - `repos/`: cloned external repos (e.g. FlowMol). Gitignored.
   - Clone them with `python scripts/setup/repos.py`.
